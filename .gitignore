@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+.venv/
+*.egg-info/
+
+# IDE
+.idea/
+
+# Data (optional - remove these lines if you want to include sample data)
+data/shots/
+reports/
+
+# OS
+.DS_Store
+Thumbs.db
