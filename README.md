@@ -1,6 +1,6 @@
 # Shot Explorer ⚡
 
-A Python mini-dashboard for viewing and analyzing pulsed plasma experiment data. Built with Streamlit for interactive exploration, this tool demonstrates plasma data analysis workflows including multi-channel time series visualization, metrics computation, quality assessment, and report generation.
+A Python mini-dashboard for viewing and analyzing pulsed plasma experiment data. Built with Streamlit for interactive exploration, this tool demonstrates plasma data analysis workflows including multi-channel time series visualization, metrics computation, quality assessment, and report generation. Vibe coded with Claude Opus 4.5.
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![Streamlit](https://img.shields.io/badge/streamlit-1.28+-red.svg)
