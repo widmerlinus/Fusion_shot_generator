@@ -6,6 +6,8 @@ Provides functions for overlay plots, metrics visualization, and trend analysis.
 
 from typing import Optional
 
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
