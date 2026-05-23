@@ -33,6 +33,7 @@ def plot_channel_overlay(
     units: Optional[str] = None,
     ax: Optional[plt.Axes] = None,
     figsize: tuple[float, float] = (10, 5),
+    log_y: bool = False,
 ) -> plt.Figure:
     """
     Create overlay plot of multiple shots for a single channel.
@@ -75,7 +76,13 @@ def plot_channel_overlay(
             data = preprocessed_data[shot.shot_id]
         else:
             data = shot.get_channel(channel)
-        
+
+        # Log scale can't show non-positive values; mask them out so the
+        # remaining decades are still readable for very dynamic channels
+        # like neutron_rate (spans 4-5 orders of magnitude shot-to-shot).
+        if log_y:
+            data = np.where(data > 0, data, np.nan)
+
         # Plot styling
         color = get_shot_color(i)
         alpha = 0.7 if highlight_shot is None else (1.0 if shot.shot_id == highlight_shot else 0.3)
@@ -89,8 +96,9 @@ def plot_channel_overlay(
         all_times.append(t)
         all_data.append(data)
     
-    # Show mean ± std if requested
-    if show_mean_std and len(all_data) > 1:
+    # Show mean ± std if requested. Skip on log scale because the
+    # mean-std envelope routinely goes non-positive and would clip oddly.
+    if show_mean_std and len(all_data) > 1 and not log_y:
         # Interpolate to common time grid
         t_min = max(t.min() for t in all_times)
         t_max = min(t.max() for t in all_times)
@@ -125,7 +133,10 @@ def plot_channel_overlay(
         ax.set_title(title)
     else:
         ax.set_title(f"{channel} - {len(shots)} shots")
-    
+
+    if log_y:
+        ax.set_yscale('log')
+
     ax.grid(True, alpha=0.3)
     
     # Only show legend if reasonable number of entries

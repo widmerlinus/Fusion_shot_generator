@@ -33,7 +33,44 @@ CHANNEL_CONFIG = {
         "units": "a.u.",
         "base_amplitude": 0.8,
     },
+    "neutron_rate": {
+        "description": "DD fusion neutron emission rate (binned, scintillator-derived)",
+        "units": "n/s",
+        # Placeholder: actual peak rate is computed in generate_shot from
+        # control-variable-driven n_D and T_i (DD fusion physics).
+        "base_amplitude": 1.0,
+    },
 }
+
+
+# --- DD fusion physics helpers ---------------------------------------------
+# Simplified parameterization of the D(d,n)3He reactivity <sigma v>, fit form
+# from Bosch & Hale (Nucl. Fusion 32, 1992), valid for keV-scale T_i.
+# We use a stripped-down version sufficient for plausible scaling rather than
+# absolute accuracy: it captures the steep temperature dependence (~T_i^3-4
+# in the 0.2-1 keV regime relevant to PI3-class devices).
+
+# Approximate reference values for a PI3-class spherical tokamak (paper:
+# n_e ~ 3e19 m^-3, T_e > 400 eV, up to ~1e8 neutrons per shot).
+N_D_REF_M3 = 3.0e19     # reference deuteron density [m^-3]
+T_I_REF_KEV = 0.8       # reference ion temperature [keV]
+PLASMA_VOLUME_M3 = 1.0  # rough effective volume [m^3]
+
+
+def dd_reactivity_m3_per_s(t_i_keV: float) -> float:
+    """
+    Bosch-Hale-style D(d,n)3He reactivity in m^3/s.
+
+    Approximate fit: <sigma v> ~ C * T^(-2/3) * exp(-B * T^(-1/3))
+    Coefficients chosen to reproduce textbook DD-n reactivity within a few
+    percent over T_i = 0.2 - 5 keV.
+    """
+    if t_i_keV <= 0:
+        return 0.0
+    sigma_v_cm3_s = 2.72e-14 * t_i_keV ** (-2.0 / 3.0) * np.exp(
+        -19.94 * t_i_keV ** (-1.0 / 3.0)
+    )
+    return sigma_v_cm3_s * 1e-6  # cm^3 -> m^3
 
 
 def generate_b_dot(
@@ -183,11 +220,87 @@ def generate_xray_proxy(
     return signal
 
 
+def generate_neutron_rate(
+    t: np.ndarray,
+    event_time: float,
+    amplitude: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """
+    Generate a binned neutron count rate trace [n/s].
+
+    Models the time-resolved DD-neutron yield that a binned scintillator
+    diagnostic (cf. PI3 / General Fusion paper) would report:
+
+      * Slow rise after plasma formation as the plasma heats and density
+        builds up (~few hundred microseconds).
+      * Exponential decay over a few milliseconds as the plasma cools and
+        dilutes.
+      * Per-sample Poisson sampling on the underlying smooth rate, so the
+        fractional noise grows as the rate falls -- exactly the behaviour
+        the paper handles with its variable-width count bins.
+
+    `amplitude` is the *peak* instantaneous source rate in n/s; it is
+    computed upstream from the shot's T_i and n_D (see generate_shot).
+    """
+    signal = np.zeros_like(t)
+
+    plasma_mask = t > event_time
+    if not np.any(plasma_mask):
+        # Background-only trace: small detector dark/cosmic floor.
+        bg_rate = max(amplitude * 1e-5, 1e3)
+        dt = float(np.median(np.diff(t))) if len(t) > 1 else 1e-6
+        counts = rng.poisson(bg_rate * dt, size=len(t))
+        return counts / dt
+
+    t_rel = t[plasma_mask] - event_time
+
+    # Asymmetric rise/decay envelope. A real PI3-class plasma lasts tens of
+    # ms with a neutron pulse that decays over ~milliseconds, but the rest
+    # of this simulator runs on a 1 ms window (so the fast b_dot /
+    # photodiode physics stays well-resolved). We therefore compress the
+    # neutron pulse to ~sub-ms timescales so the full rise-peak-decay shape
+    # is visible within the shot. With these constants the peak occurs at
+    # ~150 us after event_time and the trace decays to ~10% by ~700 us.
+    rise_time = 8e-5 + rng.uniform(-2e-5, 2e-5)
+    decay_time = 3.5e-4 + rng.uniform(-7e-5, 7e-5)
+
+    # Double-exponential envelope, normalised so peak == amplitude.
+    envelope = np.exp(-t_rel / decay_time) - np.exp(-t_rel / rise_time)
+    env_max = envelope.max() if envelope.max() > 0 else 1.0
+    envelope = amplitude * envelope / env_max
+
+    # Small detector background floor (cosmics, ambient gammas misclassified):
+    # the paper sees neutron events late in the shot even when the plasma
+    # has largely decayed (their Fig. 3).
+    bg_rate = max(amplitude * 1e-5, 1e3)
+
+    true_rate = np.zeros_like(t)
+    true_rate[plasma_mask] = envelope
+    true_rate += bg_rate
+    true_rate = np.maximum(true_rate, 0.0)
+
+    # Per-sample Poisson sampling: observed counts in a sample of width dt
+    # ~ Poisson(true_rate * dt). Convert back to a rate so the channel
+    # stays in n/s regardless of dt.
+    dt = float(np.median(np.diff(t))) if len(t) > 1 else 1e-6
+    expected_counts = true_rate * dt
+    # np.random.Generator.poisson silently clips at very large lam; use a
+    # Gaussian approximation when lam is large to stay well-behaved.
+    counts = np.where(
+        expected_counts > 1e6,
+        expected_counts + rng.normal(0.0, np.sqrt(np.maximum(expected_counts, 0.0))),
+        rng.poisson(np.maximum(expected_counts, 0.0)),
+    )
+    return np.maximum(counts, 0.0) / dt
+
+
 CHANNEL_GENERATORS = {
     "b_dot": generate_b_dot,
     "interferometer": generate_interferometer,
     "photodiode": generate_photodiode,
     "xray_proxy": generate_xray_proxy,
+    "neutron_rate": generate_neutron_rate,
 }
 
 
@@ -233,7 +346,19 @@ def inject_imperfections(
         extra_noise = rng.normal(0, np.nanstd(data["b_dot"]) * 2, len(data["b_dot"]))
         data["b_dot"] += extra_noise
         imperfections.append("b_dot_noisy")
-    
+
+    # Scintillator pile-up saturation (15% chance for neutron_rate).
+    # When the true count rate is high enough that two pulses overlap inside
+    # the PSD integration window, the upstream pipeline can no longer
+    # distinguish them and the *reported* rate plateaus below the true
+    # value -- a hard cap on the highest-yield shots. Cf. paper Sec. III.C.
+    if "neutron_rate" in data and rng.random() < 0.15:
+        peak = np.nanmax(data["neutron_rate"])
+        if peak > 0:
+            clip_level = peak * rng.uniform(0.5, 0.8)
+            data["neutron_rate"] = np.clip(data["neutron_rate"], None, clip_level)
+            imperfections.append("neutron_rate_pileup")
+
     return data, imperfections
 
 
@@ -279,15 +404,35 @@ def generate_shot(
     voltage_factor = control_vars["injector_voltage_V"] / 1000.0
     
     data = {"t": t}
-    
+
+    # --- Physics-based amplitude for the neutron channel ---------------
+    # T_i scales with stored energy (voltage) and confinement (coil current);
+    # n_D scales with fueling (pressure) and ionization (voltage). Both get
+    # a modest shot-to-shot jitter on top.
+    coil_factor = control_vars["coil_current_kA"] / 11.5
+    # T_i jitter is intentionally mild (~+/-15%) because <sigma v> is
+    # exponentially sensitive to T_i -- even a 15% T_i swing already gives
+    # ~7x rate variation. Wider jitter would make the brightest shot dwarf
+    # everything else on a linear plot.
+    t_i_keV = T_I_REF_KEV * voltage_factor * coil_factor * rng.uniform(0.85, 1.15)
+    t_i_keV = max(t_i_keV, 0.1)  # keep reactivity finite
+    n_D_m3 = N_D_REF_M3 * pressure_factor * voltage_factor * rng.uniform(0.9, 1.1)
+    # 0.5 * n^2 * <sigma v> * V is the volume-integrated D-D-n rate.
+    neutron_peak_rate = 0.5 * n_D_m3 ** 2 * dd_reactivity_m3_per_s(t_i_keV) * PLASMA_VOLUME_M3
+
     for channel, config in CHANNEL_CONFIG.items():
         base_amp = config["base_amplitude"]
-        # Shot-to-shot amplitude variation + control var effects
-        amplitude = base_amp * rng.uniform(0.7, 1.3) * pressure_factor * voltage_factor
-        
+        if channel == "neutron_rate":
+            # Peak rate in n/s, set by DD physics rather than the generic
+            # linear control-var coupling used by the diagnostic channels.
+            amplitude = neutron_peak_rate
+        else:
+            # Shot-to-shot amplitude variation + control var effects
+            amplitude = base_amp * rng.uniform(0.7, 1.3) * pressure_factor * voltage_factor
+
         # Time jitter from timing_offset
         channel_event_time = event_time + control_vars["timing_offset_us"] * 1e-6
-        
+
         data[channel] = CHANNEL_GENERATORS[channel](t, channel_event_time, amplitude, rng)
     
     # Inject imperfections

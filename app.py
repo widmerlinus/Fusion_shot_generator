@@ -231,7 +231,7 @@ def main():
         selected_channels = st.multiselect(
             "Channels to plot",
             options=dataset_info["channels"],
-            default=dataset_info["channels"][:4]
+            default=dataset_info["channels"]
         )
         
         st.divider()
@@ -342,9 +342,19 @@ def main():
     # --- Overlay Plots Tab ---
     with tab_plots:
         st.header("Channel Overlay Plots")
-        
-        show_mean_std = st.checkbox("Show mean ± std envelope", value=True)
-        
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            show_mean_std = st.checkbox("Show mean ± std envelope", value=True)
+        with col_b:
+            log_y_channels = st.multiselect(
+                "Log y-axis for",
+                options=selected_channels,
+                default=["neutron_rate"] if "neutron_rate" in selected_channels else [],
+                help="Useful for channels with several orders of magnitude of "
+                     "shot-to-shot variation (e.g. neutron_rate).",
+            )
+
         highlight_shot = st.selectbox(
             "Highlight shot",
             options=["None"] + selected_ids,
@@ -352,10 +362,11 @@ def main():
         )
         if highlight_shot == "None":
             highlight_shot = None
-        
+
         for channel in selected_channels:
             st.subheader(channel)
-            
+
+            log_y = channel in log_y_channels
             fig = plot_channel_overlay(
                 selected_shots,
                 channel,
@@ -364,6 +375,7 @@ def main():
                 highlight_shot=highlight_shot,
                 show_mean_std=show_mean_std,
                 title=f"{channel} - {len(selected_shots)} shots",
+                log_y=log_y,
             )
             show_fig(fig)
     

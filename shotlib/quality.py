@@ -294,6 +294,9 @@ def assess_channel_quality(
         "interferometer": 0.2,
         "photodiode": 0.1,
         "xray_proxy": 0.05,
+        # n/s units; below ~1e7 n/s peak the shot is effectively too dim
+        # to infer T_i (about 1e5 total neutrons over a ms-long pulse).
+        "neutron_rate": 1e7,
     }
     threshold = peak_thresholds.get(channel_name, 0.1)
     low_flag, low_details = check_low_signal(data, threshold)
