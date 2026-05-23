@@ -85,45 +85,67 @@ def check_saturation(
     valid_data = data[~np.isnan(data)]
     if len(valid_data) < stuck_samples_threshold:
         return False, {"saturated": False}
-    
+
     details = {"saturated": False}
-    
+
+    # Reference scale for what counts as a "saturating" stuck value or
+    # clipping rail: a non-trivial fraction of the trace's peak absolute
+    # value. Long runs at (or near) zero are *not* saturation -- they're
+    # just quiet baseline, which is the natural state of a counting
+    # detector or a half-rectified channel before the event. Without this
+    # guard, the neutron_rate channel (Poisson(0.001) -> 0 every sample
+    # in the pre-event period) would be flagged as saturated on every
+    # shot.
+    abs_max = float(np.max(np.abs(valid_data)))
+    saturation_floor = 0.1 * abs_max if abs_max > 0 else np.inf
+
     # Check for stuck values (consecutive identical values)
     if len(valid_data) > stuck_samples_threshold:
         diff = np.diff(valid_data)
         # Find runs of zero diff
         zero_diff = np.abs(diff) < 1e-15
-        
-        # Count longest run
+
+        # Track longest run and the value it's stuck at, so we can ignore
+        # runs that are sitting near zero (quiet baseline).
         max_run = 0
+        max_run_value = 0.0
         current_run = 0
-        for is_zero in zero_diff:
+        current_run_start = 0
+        for i, is_zero in enumerate(zero_diff):
             if is_zero:
+                if current_run == 0:
+                    current_run_start = i
                 current_run += 1
-                max_run = max(max_run, current_run)
+                if current_run > max_run:
+                    max_run = current_run
+                    max_run_value = float(valid_data[current_run_start])
             else:
                 current_run = 0
-        
-        if max_run >= stuck_samples_threshold:
+
+        if max_run >= stuck_samples_threshold and abs(max_run_value) >= saturation_floor:
             details["stuck_run_length"] = max_run
+            details["stuck_value"] = max_run_value
             details["saturated"] = True
-    
+
     # Check for clipping at extremes
     if clip_detection and len(valid_data) > 10:
-        data_max = np.max(valid_data)
-        data_min = np.min(valid_data)
-        
+        data_max = float(np.max(valid_data))
+        data_min = float(np.min(valid_data))
+
         # Count values at or very near the extremes
-        at_max = np.sum(np.abs(valid_data - data_max) < 1e-10)
-        at_min = np.sum(np.abs(valid_data - data_min) < 1e-10)
-        
-        # If many values are clipped at the extreme
+        at_max = int(np.sum(np.abs(valid_data - data_max) < 1e-10))
+        at_min = int(np.sum(np.abs(valid_data - data_min) < 1e-10))
+
+        # If many values are clipped at the extreme, AND the extreme is
+        # itself a meaningful (non-near-zero) value, treat it as a rail.
         clip_threshold = len(valid_data) * 0.02  # 2% threshold
-        if at_max > clip_threshold or at_min > clip_threshold:
-            details["clipped_at_max"] = int(at_max)
-            details["clipped_at_min"] = int(at_min)
+        if at_max > clip_threshold and abs(data_max) >= saturation_floor:
+            details["clipped_at_max"] = at_max
             details["saturated"] = True
-    
+        if at_min > clip_threshold and abs(data_min) >= saturation_floor:
+            details["clipped_at_min"] = at_min
+            details["saturated"] = True
+
     return details["saturated"], details
 
 
