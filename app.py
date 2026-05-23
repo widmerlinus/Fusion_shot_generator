@@ -147,20 +147,30 @@ def main():
         if not any(data_path.glob("shot_*.csv")):
             st.info("No shot data found. Generating sample dataset...")
             from shotlib.synthetic import generate_dataset
-            generate_dataset(n_shots=30, out_dir=data_path, seed=42)
+            generate_dataset(n_shots=30, out_dir=data_path, seed=None)
             st.rerun()
-        
+
+        if st.button("🔄 Regenerate data", help="Wipe the dataset folder and generate a fresh random set of shots"):
+            from shotlib.synthetic import generate_dataset
+            for f in data_path.glob("shot_*.csv"):
+                f.unlink()
+            for f in data_path.glob("shot_*.meta.json"):
+                f.unlink()
+            generate_dataset(n_shots=30, out_dir=data_path, seed=None)
+            st.cache_data.clear()
+            st.rerun()
+
         try:
             cached_data = load_shots_cached(data_dir)
             shots = reconstruct_shots(cached_data)
         except Exception as e:
             st.error(f"Failed to load data: {e}")
             return
-        
+
         if not shots:
             st.warning("No shot files found")
             return
-        
+
         dataset_info = get_dataset_info(shots)
         st.success(f"Loaded {len(shots)} shots")
         
